@@ -296,7 +296,7 @@ def verify_ko_elf(ko_path, ko_name):
 # ---------------------------------------------------------------------------
 PKG_META = (
     "[nemesis]\n"
-    "version=1.2\n"
+    "version=1.3\n"
     "id=stock.hotspot\n"
     "name=Stock WiFi Hotspot Enabler\n"
     "types=application,service\n"
@@ -345,6 +345,34 @@ setprop wifi.hotspot.subscription true
 setprop wifi.hotspot.apn Public
 setprop wifi.hotspot.internet 1
 
+# Inject stock "데이터/네트워크" (Data/Network) menu icon into com.android.settings
+_empty_full="hdhbaahoaaacaaaaaaaaaaaaaaaahpamaaaaheaabpgdgpgncogbgogehcgpgjgecohdgfhehegjgoghhdcogfgnhahehjfpgjhegfgn"
+_data_net="hdhbaahoaaachpacaaklhpacaakkhpamaabhheaabfgdgpgncogiglgngdcohhgjgggjhdgfhehegjgoghhd"
+_empty_ref="hdhbaahoaaacaaaaaaaaaaaaaaaahpamaaaahbaaho[a-p][a-p][a-p][a-p]"
+for _pref in /data/data/com.android.settings/shared_prefs/com.android.settings_preferences.xml /securedata/com.android.settings/shared_prefs/settings_icons.xml; do
+    [ -f "$_pref" ] || continue
+    if ! grep -q "hpacaaklhpacaakkhpamaabh" "$_pref" 2>/dev/null && grep -q "$_empty_full" "$_pref" 2>/dev/null; then
+        am force-stop com.android.settings >/dev/null 2>&1
+        for _sp in /proc/[0-9]*; do
+            _sp="${_sp#/proc/}"
+            read -r _scmd < "/proc/$_sp/cmdline" 2>/dev/null
+            case "$_scmd" in
+                com.android.settings*) kill -9 "$_sp" 2>/dev/null ;;
+            esac
+        done
+        [ ! -f "$TMP_DIR/${_pref##*/}.bak" ] && cp "$_pref" "$TMP_DIR/${_pref##*/}.bak" 2>/dev/null
+        sed -e "/ItemsData/s/${_empty_full}/${_data_net}/" \
+            -e "/ItemsData/s/${_empty_ref}/${_empty_full}/g" "$_pref" > "$_pref.tmp" 2>/dev/null
+        if [ -s "$_pref.tmp" ] && grep -q "hpacaaklhpacaakkhpamaabh" "$_pref.tmp" 2>/dev/null; then
+            mv "$_pref.tmp" "$_pref" 2>/dev/null
+            chown 1000:1000 "$_pref" 2>/dev/null
+            chmod 0660 "$_pref" 2>/dev/null
+        else
+            rm -f "$_pref.tmp" 2>/dev/null
+        fi
+    fi
+done
+
 # 1. Stop any existing stock-hotspot-daemon instance so NEMESIS service manager
 #    (sub_08620 right after postinstall) starts a clean single daemon instance.
 if [ -f "$TMP_DIR/daemon.pid" ]; then
@@ -383,6 +411,33 @@ for _p in /proc/[0-9]*; do
     case "$_fd1" in
         *stock_hotspot/*) kill "$_p" 2>/dev/null ;;
     esac
+done
+
+# Restore com.android.settings main menu (remove injected "데이터/네트워크" item)
+_empty_full="hdhbaahoaaacaaaaaaaaaaaaaaaahpamaaaaheaabpgdgpgncogbgogehcgpgjgecohdgfhehegjgoghhdcogfgnhahehjfpgjhegfgn"
+_data_net="hdhbaahoaaachpacaaklhpacaakkhpamaabhheaabfgdgpgncogiglgngdcohhgjgggjhdgfhehegjgoghhd"
+_empty_ref="hdhbaahoaaacaaaaaaaaaaaaaaaahpamaaaahbaaho[a-p][a-p][a-p][a-p]"
+for _pref in /data/data/com.android.settings/shared_prefs/com.android.settings_preferences.xml /securedata/com.android.settings/shared_prefs/settings_icons.xml; do
+    [ -f "$_pref" ] || continue
+    if grep -q "hpacaaklhpacaakkhpamaabh" "$_pref" 2>/dev/null; then
+        am force-stop com.android.settings >/dev/null 2>&1
+        for _sp in /proc/[0-9]*; do
+            _sp="${_sp#/proc/}"
+            read -r _scmd < "/proc/$_sp/cmdline" 2>/dev/null
+            case "$_scmd" in
+                com.android.settings*) kill -9 "$_sp" 2>/dev/null ;;
+            esac
+        done
+        sed -e "/ItemsData/s/${_data_net}/${_empty_full}/g" \
+            -e "/ItemsData/s/${_empty_ref}/${_empty_full}/g" "$_pref" > "$_pref.tmp" 2>/dev/null
+        if [ -s "$_pref.tmp" ]; then
+            mv "$_pref.tmp" "$_pref" 2>/dev/null
+            chown 1000:1000 "$_pref" 2>/dev/null
+            chmod 0660 "$_pref" 2>/dev/null
+        else
+            rm -f "$_pref.tmp" 2>/dev/null
+        fi
+    fi
 done
 
 if [ ! -e /sys/bus/mmc/devices/mmc1:0001 ]; then
@@ -491,7 +546,7 @@ log_msg() {
     echo "$(date) $*" >> "$LOG_FILE" 2>/dev/null
 }
 
-log_msg "=== Stock Wi-Fi Hotspot Daemon v1.2 started (pid=$$) ==="
+log_msg "=== Stock Wi-Fi Hotspot Daemon v1.3 started (pid=$$) ==="
 
 # ------------------------------------------------------------------------------
 # 1. Detect SoC Platform (tcc803x vs tcc897x) & Built-in SDIO Wi-Fi vs USB Wi-Fi
@@ -524,8 +579,42 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Ensure Stock Hotspot Prerequisite Files & Properties
+# 2. Ensure Stock Hotspot Prerequisite Files, Properties & Settings Menu Icon
 # ------------------------------------------------------------------------------
+# Inject the stock "데이터/네트워크" (Data/Network) menu icon (mItemId=0x7f0c0017,
+# mEnableIcon=0x7f0200aa, mDisableIcon=0x7f0200ab, mClassId="com.hkmc.wifisettings")
+# into com.android.settings SharedPreferences (ItemsData) alongside Kia Connect.
+ensure_settings_data_network_menu() {
+    local _pref _empty_full _data_net _empty_ref _sp _scmd
+    _empty_full="hdhbaahoaaacaaaaaaaaaaaaaaaahpamaaaaheaabpgdgpgncogbgogehcgpgjgecohdgfhehegjgoghhdcogfgnhahehjfpgjhegfgn"
+    _data_net="hdhbaahoaaachpacaaklhpacaakkhpamaabhheaabfgdgpgncogiglgngdcohhgjgggjhdgfhehegjgoghhd"
+    _empty_ref="hdhbaahoaaacaaaaaaaaaaaaaaaahpamaaaahbaaho[a-p][a-p][a-p][a-p]"
+    for _pref in /data/data/com.android.settings/shared_prefs/com.android.settings_preferences.xml /securedata/com.android.settings/shared_prefs/settings_icons.xml; do
+        [ -f "$_pref" ] || continue
+        if ! grep -q "hpacaaklhpacaakkhpamaabh" "$_pref" 2>/dev/null && grep -q "$_empty_full" "$_pref" 2>/dev/null; then
+            am force-stop com.android.settings >/dev/null 2>&1
+            for _sp in /proc/[0-9]*; do
+                _sp="${_sp#/proc/}"
+                read -r _scmd < "/proc/$_sp/cmdline" 2>/dev/null
+                case "$_scmd" in
+                    com.android.settings*) kill -9 "$_sp" 2>/dev/null ;;
+                esac
+            done
+            [ ! -f "$TMP_DIR/${_pref##*/}.bak" ] && cp "$_pref" "$TMP_DIR/${_pref##*/}.bak" 2>/dev/null
+            sed -e "/ItemsData/s/${_empty_full}/${_data_net}/" \
+                -e "/ItemsData/s/${_empty_ref}/${_empty_full}/g" "$_pref" > "$_pref.tmp" 2>/dev/null
+            if [ -s "$_pref.tmp" ] && grep -q "hpacaaklhpacaakkhpamaabh" "$_pref.tmp" 2>/dev/null; then
+                mv "$_pref.tmp" "$_pref" 2>/dev/null
+                chown 1000:1000 "$_pref" 2>/dev/null
+                chmod 0660 "$_pref" 2>/dev/null
+                log_msg "Injected '데이터/네트워크' (Data/Network) menu item into $_pref"
+            else
+                rm -f "$_pref.tmp" 2>/dev/null
+            fi
+        fi
+    done
+}
+
 prepare_stock_hotspot_env() {
     local _wf _wmac _cur_mac
     # Unlock Kia/Hyundai Stock Hotspot UI (HKMC_WifiSettings) & Public APN upstream
@@ -536,6 +625,7 @@ prepare_stock_hotspot_env() {
         setprop persist.sys.usbwifi.hotspot 0
     fi
     echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+    ensure_settings_data_network_menu
 
     # Ensure /data/misc/wifi, hostapd control socket dir, and symlinks exist
     # (EV6 lacks /data/misc/wifi/hostapd by default, which causes netd/hostapd to fail!)
